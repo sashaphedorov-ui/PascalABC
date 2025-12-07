@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Перетягувані об'єкти — приклад</title>
+<style>
+  :root{
+    --toolbar-h:56px;
+    --bg:#f3f4f6;
+    --panel:#ffffff;
+    --accent:#2563eb;
+    --item-shadow: 0 6px 18px rgba(16,24,40,0.08);
+    --grid-size:20px;
+  }
+
+  html,body{
+    height:100%;
+    margin:0;
+    background:var(--bg);
+    font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* Toolbar on top */
+  .toolbar {
+    position:fixed;
+    top:0; left:0; right:0;
+    height:var(--toolbar-h);
+    background:var(--panel);
+    display:flex;
+    align-items:center;
+    gap:12px;
+    padding:8px 12px;
+    box-shadow:0 2px 6px rgba(10,10,10,0.06);
+    z-index:1000;
+  }
+
+  .toolbar .title { font-weight:600; color:#111827; margin-right:8px; }
+  .toolbar .controls { margin-left:auto; display:flex; gap:10px; align-items:center; }
+
+  button, input[type="checkbox"] { cursor:pointer; }
+  button {
+    background:var(--accent);
+    color:white;
+    border:0;
+    padding:8px 12px;
+    border-radius:8px;
+    box-shadow:var(--item-shadow);
+    font-weight:600;
+  }
+  .small-btn {
+    background:transparent;
+    border:1px solid #e6e7ea;
+    color:#111827;
+    padding:6px 10px;
+    box-shadow:none;
+  }
+
+  .switch-label { display:flex; align-items:center; gap:8px; font-size:14px; color:#374151; }
+
+  /* Workspace (area where objects can move) */
+  .workspace {
+    position:fixed;
+    top:var(--toolbar-h);
+    left:0; right:0; bottom:0;
+    overflow:hidden;
+  }
+
+  /* Draggable items */
+  .item {
+    position:absolute;
+    touch-action:none; /* allow pointer events for drag */
+    user-select:none;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-weight:700;
+    color:white;
+    border-radius:8px;
+    box-shadow:var(--item-shadow);
+    transition: transform 120ms ease; /* small smoothing when not actively dragging */
+    will-change: transform;
+  }
+
+  .item.dragging {
+    transition: none; /* immediate while dragging */
+    transform-origin: center;
+    /* subtle scale up while dragging */
+    transform: translate(var(--tx,0px), var(--ty,0px)) scale(1.03);
+  }
+
+  /* unique styles */
+  #square { width:96px; height:96px; background:#ef4444; left:20px; top:30px; border-radius:12px; }
+  #circle { width:88px; height:88px; background:#10b981; left:160px; top:40px; border-radius:50%; }
+  #rect   { width:140px; height:72px; background:#f59e0b; left:320px; top:50px; border-radius:10px; }
+
+  /* focus style for keyboard users */
+  .item:focus {
+    outline:2px dashed rgba(37,99,235,0.6);
+    outline-offset:6px;
+  }
+
+  /* small instruction badge */
+  .hint {
+    position:fixed;
+    right:12px;
+    bottom:12px;
+    background:#111827;
+    color:white;
+    padding:8px 12px;
+    border-radius:10px;
+    font-size:13px;
+    opacity:0.92;
+    box-shadow:0 8px 30px rgba(0,0,0,0.18);
+  }
+
+  /* grid overlay (when snap enabled, we show subtle grid) */
+  .grid {
+    position:absolute;
+    inset:0;
+    pointer-events:none;
+    background-image:
+      linear-gradient(to right, rgba(0,0,0,0.035) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(0,0,0,0.035) 1px, transparent 1px);
+    background-size: var(--grid-size) var(--grid-size);
+    opacity:0.6;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .item { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+  <div class="toolbar" role="toolbar" aria-label="Панель інструментів">
+    <div class="title">Перетягування — 3 об'єкти</div>
+
+    <div class="controls">
+      <label class="switch-label" title="Прив'язка до сітки">
+        <input id="snapToggle" type="checkbox" />
+        Snap to grid
+      </label>
+
+      <button id="resetBtn" title="Повернути початкові позиції">Reset</button>
+      <button class="small-btn" id="helpBtn" title="Підказка">Help</button>
+    </div>
+  </div>
+
+  <div class="workspace" id="workspace" tabindex="-1" aria-label="Робоча область">
+    <!-- optional grid overlay; shown/hidden by JS -->
+    <div id="grid" class="grid" style="display:none;"></div>
+
+    <!-- draggable elements -->
+    <div id="square" class="item" tabindex="0" role="button" aria-label="Червоний квадрат">A</div>
+    <div id="circle" class="item" tabindex="0" role="button" aria-label="Зелене коло">B</div>
+    <div id="rect" class="item" tabindex="0" role="button" aria-label="Помаранчевий прямокутник">C</div>
+  </div>
+
+  <div class="hint" id="hint">Tab → focus • Space / Enter → toggle keyboard-drag • Arrows → move</div>
+
+<script>
+/*
+  Draggable 3 objects with:
+    - pointer (mouse/touch) dragging using Pointer Events
+    - keyboard accessibility (focusable, arrows, Space/Enter toggle drag mode)
+    - snap-to-grid option and Reset
+    - movement constrained to viewport (workspace)
+    - z-index management, subtle animation
+*/
+
+/* CONFIG */
+const GRID_SIZE_DEFAULT = 20; // px
+const STEP_KEY = 10; // arrow step in px when not in keyboard-drag mode
+const STEP_KEY_DRAG = 20; // step when keyboard drag mode active
+
+/* State */
+const state = {
+  zIndexCounter: 10,
+  snapToGrid: false,
+  gridSize: GRID_SIZE_DEFAULT,
+  items: [], // will contain {el, initX, initY, x, y, width, height}
+};
+
+/* Helpers */
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const roundToGrid = (v, grid) => Math.round(v / grid) * grid;
+
+/* Initialize app */
+function init() {
+  const workspace = document.getElementById('workspace');
+  const grid = document.getElementById('grid');
+
+  // collect items
+  const els = Array.from(document.querySelectorAll('.item'));
+  els.forEach(el => {
+    const rect = el.getBoundingClientRect();
+    // compute initial position relative to viewport top-left
+    const initX = rect.left;
+    const initY = rect.top;
+    const info = {
+      el,
+      initX, initY,
+      x: initX, y: initY,
+      width: rect.width, height: rect.height,
+      keyboardMode: false, // whether the element is in keyboard-drag mode
+    };
+    state.items.push(info);
+    // store initial transform CSS variables
+    el.style.setProperty('--tx', '0px');
+    el.style.setProperty('--ty', '0px');
+
+    // make draggable
+    makeDraggable(info);
+  });
+
+  // snap toggle
+  const snapToggle = document.getElementById('snapToggle');
+  snapToggle.addEventListener('change', () => {
+    state.snapToGrid = snapToggle.checked;
+    grid.style.display = state.snapToGrid ? 'block' : 'none';
+  });
+
+  // reset button
+  document.getElementById('resetBtn').addEventListener('click', () => {
+    resetPositions();
+  });
+
+  // help
+  document.getElementById('helpBtn').addEventListener('click', () => {
+    alert('Інструкція:\n\n• Перетягуй мишкою або пальцем (touch).\n• Натисни Tab, щоб сфокусувати елемент. Натисни Space або Enter, щоб увімкнути режим руху клавішами, потім стрілками рухай його. Знову Space/Enter — щоб вийти.\n• Увімкни "Snap to grid" для прив\'язки до сітки.');
+  });
+
+  // adjust positions on resize (clamp to viewport)
+  window.addEventListener('resize', () => {
+    state.items.forEach(info => {
+      updateBoundsAndClamp(info);
+      applyTransform(info);
+    });
+  });
+}
+
+/* Make a specific item draggable (pointer + keyboard) */
+function makeDraggable(info) {
+  const el = info.el;
+
+  /* Pointer (mouse/touch) interaction via Pointer Events */
+  let pointerState = {
+    active: false,
+    startPointerX: 0,
+    startPointerY: 0,
+    startX: 0,
+    startY: 0,
+    pointerId: null
+  };
+
+  // On pointer down: start dragging
+  el.addEventListener('pointerdown', (ev) => {
+    ev.preventDefault();
+    el.setPointerCapture(ev.pointerId);
+    pointerState.active = true;
+    pointerState.pointerId = ev.pointerId;
+    pointerState.startPointerX = ev.clientX;
+    pointerState.startPointerY = ev.clientY;
+    pointerState.startX = info.x;
+    pointerState.startY = info.y;
+
+    // bring to front
+    el.style.zIndex = ++state.zIndexCounter;
+
+    // add dragging class to disable transition smoothing
+    el.classList.add('dragging');
+
+    // record sizes (in case of dynamic layout)
+    const rect = el.getBoundingClientRect();
+    info.width = rect.width;
+    info.height = rect.height;
+  });
+
+  // On pointer move: if active, compute delta
+  el.addEventListener('pointermove', (ev) => {
+    if (!pointerState.active || ev.pointerId !== pointerState.pointerId) return;
+    ev.preventDefault();
+
+    const dx = ev.clientX - pointerState.startPointerX;
+    const dy = ev.clientY - pointerState.startPointerY;
+
+    let nx = pointerState.startX + dx;
+    let ny = pointerState.startY + dy;
+
+    // constrain to viewport (workspace)
+    const bounds = getWorkspaceBounds();
+    nx = clamp(nx, bounds.minX, bounds.maxX - info.width + bounds.offsetX);
+    ny = clamp(ny, bounds.minY, bounds.maxY - info.height + bounds.offsetY);
+
+    // optionally snap to grid
+    if (state.snapToGrid) {
+      nx = roundToGrid(nx, state.gridSize);
+      ny = roundToGrid(ny, state.gridSize);
+    }
+
+    info.x = nx;
+    info.y = ny;
+    applyTransform(info);
+  });
+
+  // On pointer up / cancel: stop dragging
+  const endPointer = (ev) => {
+    if (!pointerState.active) return;
+    // release capture if possible
+    try { el.releasePointerCapture(pointerState.pointerId); } catch(e) {}
+    pointerState.active = false;
+    pointerState.pointerId = null;
+    el.classList.remove('dragging');
+  };
+  el.addEventListener('pointerup', endPointer);
+  el.addEventListener('pointercancel', endPointer);
+  // pointerleave should not end drag if captured, but be safe:
+  el.addEventListener('lostpointercapture', endPointer);
+
+  /* Keyboard accessibility */
+  // When focused, arrow keys move the element. Space/Enter toggles keyboard drag mode.
+  el.addEventListener('keydown', (ev) => {
+    const key = ev.key;
+    if (key === ' ' || key === 'Spacebar' || key === 'Enter') {
+      ev.preventDefault();
+      // toggle keyboard drag mode
+      info.keyboardMode = !info.keyboardMode;
+      el.classList.toggle('dragging', info.keyboardMode);
+      // bring to front when entering keyboard mode
+      if (info.keyboardMode) el.style.zIndex = ++state.zIndexCounter;
+      return;
+    }
+
+    // Arrow movement
+    if (key.startsWith('Arrow')) {
+      ev.preventDefault();
+      // small step, larger when in keyboard-drag mode
+      const step = info.keyboardMode ? STEP_KEY_DRAG : STEP_KEY;
+      let nx = info.x;
+      let ny = info.y;
+      if (key === 'ArrowLeft')  nx -= step;
+      if (key === 'ArrowRight') nx += step;
+      if (key === 'ArrowUp')    ny -= step;
+      if (key === 'ArrowDown')  ny += step;
+
+      // clamp & snap
+      const bounds = getWorkspaceBounds();
+      nx = clamp(nx, bounds.minX, bounds.maxX - info.width + bounds.offsetX);
+      ny = clamp(ny, bounds.minY, bounds.maxY - info.height + bounds.offsetY);
+      if (state.snapToGrid) {
+        nx = roundToGrid(nx, state.gridSize);
+        ny = roundToGrid(ny, state.gridSize);
+      }
+
+      info.x = nx;
+      info.y = ny;
+      applyTransform(info);
+    }
+  });
+
+  // On focus, show outline (CSS does it). On blur, ensure keyboard mode off.
+  el.addEventListener('blur', () => {
+    if (info.keyboardMode) {
+      info.keyboardMode = false;
+      el.classList.remove('dragging');
+    }
+  });
+
+  // Store initial (relative to viewport) values for reset
+  // Already stored in init()
+}
+
+/* Apply transform to element based on info.x/info.y (absolute coords) */
+function applyTransform(info) {
+  // We want to set transform to move element to (info.x, info.y) in viewport coordinates.
+  // However, the element's original position (from CSS left/top) may be present.
+  // We'll compute delta = desired - original and set CSS variables used in transform.
+  const el = info.el;
+  // original initial coordinates were stored as initX/initY
+  const dx = info.x - info.initX;
+  const dy = info.y - info.initY;
+  el.style.setProperty('--tx', dx + 'px');
+  el.style.setProperty('--ty', dy + 'px');
+  el.style.transform = `translate(var(--tx), var(--ty))`;
+}
+
+/* Reset all items to their initial positions */
+function resetPositions() {
+  state.items.forEach(info => {
+    info.x = info.initX;
+    info.y = info.initY;
+    applyTransform(info);
+    info.el.style.zIndex = ''; // reset stacking
+    info.el.classList.remove('dragging');
+    info.keyboardMode = false;
+  });
+  state.zIndexCounter = 10;
+}
+
+/* Get viewport/workspace bounds.
+   We treat workspace as the visible viewport area, starting at y = toolbar height.
+   Returns {minX,minY,maxX,maxY, offsetX, offsetY}
+   offsetX/offsetY are often zero but help if initial coordinates include page offsets.
+*/
+function getWorkspaceBounds() {
+  const toolbarH = document.querySelector('.toolbar').getBoundingClientRect().height;
+  const minX = 0; // leftmost viewport
+  const minY = toolbarH; // top of workspace (below toolbar)
+  const maxX = window.innerWidth;
+  const maxY = window.innerHeight;
+  // offsets: since info.initX/initY are absolute viewport coords, we keep offset 0.
+  return {minX, minY, maxX, maxY, offsetX:0, offsetY:0};
+}
+
+/* Clamp an element's current info.x/y to workspace bounds (useful on resize) */
+function updateBoundsAndClamp(info) {
+  const bounds = getWorkspaceBounds();
+  info.x = clamp(info.x, bounds.minX, bounds.maxX - info.width + bounds.offsetX);
+  info.y = clamp(info.y, bounds.minY, bounds.maxY - info.height + bounds.offsetY);
+  if (state.snapToGrid) {
+    info.x = roundToGrid(info.x, state.gridSize);
+    info.y = roundToGrid(info.y, state.gridSize);
+  }
+}
+
+/* On startup: compute initial transforms so that CSS left/top + transform align */
+function initialApply() {
+  state.items.forEach(info => {
+    // If initial left/top are different from computed, we keep initX/initY values as reference.
+    applyTransform(info);
+  });
+}
+
+/* Run init */
+init();
+initialApply();
+
+</script>
+</body>
+</html>
